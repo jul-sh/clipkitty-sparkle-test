@@ -1,0 +1,8 @@
+La mayoría de los gestores de portapapeles eliminan tu historial después de unos días o solo conservan un historial corto. ClipKitty lo guarda todo y te permite encontrarlo al instante.
+
+Historial Ilimitado — Sin topes, sin límites. Si lo copiaste hace un año, sigue ahí. Texto, imágenes, enlaces, colores; nada caduca, nada se trunca.
+Vistas Multilínea — Ve exactamente lo que vas a pegar en un panel de vista previa dedicado.
+Búsqueda Instantánea — Encuentra cualquier fragmento en milisegundos, ya sea que busques entre diez elementos o diez millones. Pensado para quienes copian muchas cosas y necesitan volver a encontrarlas.
+Flujo de trabajo con teclado. — Optimizado para la velocidad con acceso mediante ⌥Space.
+Seguro y Privado — Tus datos nunca salen de tu equipo. ClipKitty funciona completamente en el dispositivo, sin sincronización en la nube, sin telemetría y sin suscripciones.
+Transparente y Abierto. — Licencia permisiva con código fuente disponible públicamente. Apoya el desarrollo comprando a través del App Store.

@@ -1,0 +1,77 @@
+# Swift / Xcode
+.build/
+.make/
+.swiftpm/
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+*.xcresult/
+
+# Tuist
+Derived/
+Tuist/.build/
+
+# Node
+node_modules
+
+# Rust
+distribution/rust-data-gen/target/
+rust-core/target/
+purr/target/
+purr/generated/
+purr/include/
+purr/*.a
+
+# Generated UniFFI bindings (regenerate with: cargo run --bin generate-bindings)
+Sources/ClipKittyRust/purr.swift
+Sources/ClipKittyRust/purrFFI.h
+Sources/ClipKittyRust/module.modulemap
+Sources/ClipKittyRust/*.a
+Sources/ClipKittyRustWrapper/purr.swift
+Sources/ClipKittyRustWrapper/purrFFI.h
+Sources/ClipKittyRustWrapper/purrFFI.modulemap
+
+# Screenshots
+screenshot.png
+screenshot-*.png
+
+# Marketing screenshots (generated in CI by ImageMagick)
+marketing/
+
+# macOS
+.DS_Store
+*.app
+*.dmg
+
+# Rust build artifacts
+purr/target/
+
+# Log files
+*.log
+
+# SQLite temporary files
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+
+# Data Generation and Indexing
+tantivy_index*/
+Sources/App/tantivy_index*/
+distribution/tantivy_index*/
+distribution/data-gen/progress_rust.json
+
+# Benchmark data (generated with: cargo run --release --bin generate-bench-data)
+purr/benches/synthetic_1m.sqlite
+rust-core/benches/synthetic_1m.sqlite
+purr/benches/tantivy_index*/
+
+# Distribution artifacts
+*.pkg
+*.p8
+*.provisionprofile
+
+# Localized synthetic databases (generated at screenshot time from base + images/)
+distribution/SyntheticData_*.sqlite
+
+# ASC CLI
+.asc/

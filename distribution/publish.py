@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""Publish built .pkg and all metadata/screenshots to App Store Connect.
+
+Prerequisites:
+  - ClipKitty.pkg exists at PROJECT_ROOT (run `make -C distribution appstore` first)
+  - AGE_SECRET_KEY env var or stored in macOS Keychain (via get-age-key.sh)
+  - asc CLI installed (run distribution/install-deps.sh)
+
+Usage:
+  ./distribution/publish.py
+  ./distribution/publish.py --dry-run
+  ./distribution/publish.py --metadata-only
+
+If whatsNew cannot be set (e.g. first-ever submission), the script
+automatically retries without release_notes.txt.
+"""
+
+import argparse
+import base64
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+SECRETS_DIR = os.path.join(PROJECT_ROOT, "secrets")
+
+APP_ID = "6759137247"
+PKG_PATH = os.path.join(PROJECT_ROOT, "ClipKitty.pkg")
+METADATA_DIR = os.path.join(SCRIPT_DIR, "metadata")
+MARKETING_DIR = os.path.join(PROJECT_ROOT, "marketing")
+
+LOCALE_MAP = {
+    "en": "en-US", "es": "es-ES", "de": "de-DE", "fr": "fr-FR",
+    "ja": "ja", "ko": "ko", "pt-BR": "pt-BR", "ru": "ru",
+    "zh-Hans": "zh-Hans", "zh-Hant": "zh-Hant",
+}
+
+
+def run(cmd, *, check=True, capture=False, env=None):
+    merged = {**os.environ, **(env or {})}
+    r = subprocess.run(cmd, check=check, capture_output=capture, text=True, env=merged)
+    return r
+
+
+def decrypt_secret(name, age_key):
+    path = os.path.join(SECRETS_DIR, f"{name}.age")
+    if not os.path.isfile(path):
+        sys.exit(f"Error: Secret file not found: {path}")
+    r = subprocess.run(
+        ["age", "-d", "-i", "-", path],
+        input=age_key, capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        sys.exit(f"Error decrypting {name}: {r.stderr.strip()}")
+    return r.stdout.strip()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Publish to App Store Connect")
+    parser.add_argument("--dry-run", action="store_true", help="Preview without uploading")
+    parser.add_argument("--metadata-only", action="store_true", help="Skip binary upload")
+    parser.add_argument("--version", help="Version string (e.g., 1.8.8) for auto-creating App Store version")
+    args = parser.parse_args()
+
+    # --- Validate prerequisites ---
+
+    age_key = os.environ.get("AGE_SECRET_KEY", "")
+    if not age_key:
+        # Try to get from keychain via helper script
+        try:
+            r = subprocess.run(
+                [os.path.join(SCRIPT_DIR, "get-age-key.sh")],
+                capture_output=True, text=True, check=True
+            )
+            age_key = r.stdout
+        except subprocess.CalledProcessError:
+            sys.exit("Error: AGE_SECRET_KEY not set and not found in Keychain.\n"
+                     "  Set via: export AGE_SECRET_KEY='AGE-SECRET-KEY-...'\n"
+                     "  Or store: security add-generic-password -s clipkitty -a AGE_SECRET_KEY -w 'KEY'")
+
+    if not shutil.which("asc"):
+        sys.exit("Error: asc CLI not found. Run: distribution/install-deps.sh")
+
+    if not args.metadata_only and not os.path.isfile(PKG_PATH):
+        sys.exit(f"Error: {PKG_PATH} not found. Run: make -C distribution appstore")
+
+    # --- Decrypt secrets ---
+
+    print("Decrypting secrets...")
+    asc_key_id = decrypt_secret("APPSTORE_KEY_ID", age_key)
+    asc_issuer_id = decrypt_secret("NOTARY_ISSUER_ID", age_key)
+    asc_private_key_b64 = decrypt_secret("NOTARY_KEY_BASE64", age_key)
+
+    # --- Set up auth ---
+    # xcrun altool requires the key at ~/.private_keys/AuthKey_<ID>.p8
+    # (it ignores --apiKeyPath and only searches standard directories)
+
+    altool_key_dir = os.path.expanduser("~/.private_keys")
+    os.makedirs(altool_key_dir, exist_ok=True)
+    altool_key_path = os.path.join(altool_key_dir, f"AuthKey_{asc_key_id}.p8")
+    altool_key_existed = os.path.isfile(altool_key_path)
+
+    # asc CLI uses ASC_PRIVATE_KEY_PATH (supports arbitrary paths)
+    asc_key_fd, asc_key_path = tempfile.mkstemp()
+    import_dir = None
+    try:
+        key_bytes = base64.b64decode(asc_private_key_b64)
+        os.write(asc_key_fd, key_bytes)
+        os.close(asc_key_fd)
+        os.chmod(asc_key_path, 0o600)
+
+        if not altool_key_existed:
+            with open(altool_key_path, "wb") as f:
+                f.write(key_bytes)
+            os.chmod(altool_key_path, 0o600)
+
+        asc_env = {
+            "ASC_KEY_ID": asc_key_id,
+            "ASC_ISSUER_ID": asc_issuer_id,
+            "ASC_PRIVATE_KEY_PATH": asc_key_path,
+        }
+        os.environ.update(asc_env)
+
+        print(f"Authenticated (key: {asc_key_id})")
+
+        # --- Upload binary ---
+
+        if not args.metadata_only:
+            print("\n=== Uploading binary ===")
+            if args.dry_run:
+                print(f"[dry-run] Would upload: {PKG_PATH}")
+            else:
+                run([
+                    "xcrun", "altool", "--upload-package", PKG_PATH,
+                    "--type", "osx",
+                    "--apiKey", asc_key_id,
+                    "--apiIssuer", asc_issuer_id,
+                ])
+                print("Binary uploaded.")
+
+        # --- Upload metadata ---
+
+        print("\n=== Uploading metadata ===")
+
+        # Find the editable App Store version
+        r = run(
+            ["asc", "versions", "list",
+             "--app", APP_ID, "--platform", "MAC_OS",
+             "--state", "PREPARE_FOR_SUBMISSION"],
+            capture=True, check=False,
+        )
+        if r.returncode != 0:
+            sys.exit(f"Error listing versions: {r.stderr.strip()}")
+
+        data = json.loads(r.stdout)
+        versions = data.get("data", data) if isinstance(data, dict) else data
+        version_id = None
+
+        if not versions:
+            if args.version:
+                print(f"No version in PREPARE_FOR_SUBMISSION state. Attempting to create {args.version}...")
+                r = run(
+                    ["asc", "versions", "create",
+                     "--app", APP_ID, "--platform", "MAC_OS",
+                     "--version", args.version, "--release-type", "MANUAL"],
+                    capture=True, check=False,
+                )
+                if r.returncode == 0:
+                    create_data = json.loads(r.stdout)
+                    version_id = create_data.get("data", create_data).get("id") if isinstance(create_data, dict) else create_data.get("id")
+                    print(f"Created version {args.version} (ID: {version_id})")
+                else:
+                    print(f"Warning: Could not create version {args.version}: {r.stderr.strip()}")
+                    print("Skipping metadata and screenshot upload (binary was uploaded successfully).")
+                    return
+            else:
+                print("Warning: No App Store version in PREPARE_FOR_SUBMISSION state.")
+                print("Skipping metadata and screenshot upload (binary was uploaded successfully).")
+                print("Hint: Pass --version to auto-create a new version, or create one manually in App Store Connect.")
+                return
+        else:
+            version_id = versions[0]["id"]
+
+        print(f"Target version ID: {version_id}")
+
+        # Assemble fastlane-style import directory (metadata only, no screenshots).
+        # asc migrate import requires a screenshots/ dir to exist even if empty.
+        import_dir = tempfile.mkdtemp()
+        import_metadata = os.path.join(import_dir, "metadata")
+        shutil.copytree(METADATA_DIR, import_metadata)
+        os.makedirs(os.path.join(import_dir, "screenshots"), exist_ok=True)
+
+        import_cmd = [
+            "asc", "migrate", "import",
+            "--app", APP_ID,
+            "--version-id", version_id,
+            "--fastlane-dir", import_dir,
+        ]
+
+        if args.dry_run:
+            print(f"\n[dry-run] Would import metadata to version {version_id}:")
+            print(f"  Metadata: {METADATA_DIR}")
+            run(import_cmd + ["--dry-run"])
+        else:
+            r = run(import_cmd, check=False, capture=True)
+            if r.returncode != 0 and "whatsNew" in r.stderr and "cannot be edited" in r.stderr:
+                print("whatsNew rejected (first submission), retrying without release notes...")
+                for root, _, files in os.walk(import_metadata):
+                    for f in files:
+                        if f == "release_notes.txt":
+                            os.unlink(os.path.join(root, f))
+                run(import_cmd)
+            elif r.returncode != 0:
+                print(r.stderr, file=sys.stderr)
+                sys.exit(r.returncode)
+            print("Metadata uploaded.")
+
+        # --- Upload screenshots ---
+
+        print("\n=== Uploading screenshots ===")
+
+        # Get version localizations to map locale -> localization ID
+        r = run(
+            ["asc", "localizations", "list",
+             "--version", version_id, "--paginate"],
+            capture=True, check=False,
+        )
+        if r.returncode != 0:
+            sys.exit(f"Error listing localizations: {r.stderr.strip()}")
+
+        loc_data = json.loads(r.stdout)
+        loc_list = loc_data.get("data", loc_data) if isinstance(loc_data, dict) else loc_data
+        locale_to_loc_id = {}
+        for loc in loc_list:
+            locale = loc.get("attributes", {}).get("locale", "")
+            locale_to_loc_id[locale] = loc["id"]
+
+        screenshot_count = 0
+        if os.path.isdir(MARKETING_DIR):
+            for entry in sorted(os.listdir(MARKETING_DIR)):
+                src_dir = os.path.join(MARKETING_DIR, entry)
+                if not os.path.isdir(src_dir):
+                    continue
+                asc_locale = LOCALE_MAP.get(entry)
+                if not asc_locale:
+                    continue
+                loc_id = locale_to_loc_id.get(asc_locale)
+                if not loc_id:
+                    print(f"  Warning: no localization for {asc_locale}, skipping")
+                    continue
+                pngs = sorted(glob.glob(os.path.join(src_dir, "screenshot_*.png")))
+                if not pngs:
+                    continue
+
+                # Delete existing screenshots before uploading new ones to avoid duplicates
+                print(f"  Deleting existing screenshots for {asc_locale}...")
+                if args.dry_run:
+                    print(f"    [dry-run] Would delete existing screenshots")
+                else:
+                    r = run(
+                        ["asc", "screenshots", "list",
+                         "--version-localization", loc_id,
+                         "--device-type", "APP_DESKTOP"],
+                        capture=True, check=False,
+                    )
+                    if r.returncode == 0:
+                        existing = json.loads(r.stdout)
+                        existing_list = existing.get("data", existing) if isinstance(existing, dict) else existing
+                        for screenshot in existing_list:
+                            screenshot_id = screenshot.get("id")
+                            if screenshot_id:
+                                run(
+                                    ["asc", "screenshots", "delete",
+                                     "--id", screenshot_id, "--confirm"],
+                                    check=False,
+                                )
+
+                print(f"  Uploading {len(pngs)} screenshots for {asc_locale}...")
+                if args.dry_run:
+                    for png in pngs:
+                        print(f"    [dry-run] {os.path.basename(png)}")
+                else:
+                    for png in pngs:
+                        run([
+                            "asc", "screenshots", "upload",
+                            "--version-localization", loc_id,
+                            "--device-type", "APP_DESKTOP",
+                            "--path", png,
+                        ])
+                screenshot_count += len(pngs)
+
+        print(f"Total screenshots uploaded: {screenshot_count}")
+
+        print("\n=== Publish complete ===")
+
+    finally:
+        os.unlink(asc_key_path)
+        if not altool_key_existed and os.path.isfile(altool_key_path):
+            os.unlink(altool_key_path)
+        if import_dir and os.path.isdir(import_dir):
+            shutil.rmtree(import_dir)
+
+
+if __name__ == "__main__":
+    main()

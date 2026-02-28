@@ -1,0 +1,279 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main, release]
+  pull_request:
+    branches: [main, release]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    outputs:
+      version: ${{ steps.resolve-version.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Configure macOS scrollbar behavior
+        run: |
+          defaults write -g AppleShowScrollBars -string WhenScrolling
+          killall cfprefsd || true
+
+      - name: Decrypt secrets
+        id: secrets
+        run: |
+          brew install age
+          echo "$AGE_SECRET_KEY" > /tmp/age-key.txt
+          chmod 600 /tmp/age-key.txt
+          for f in secrets/*.age; do
+            name=$(basename "$f" .age)
+            value=$(age -d -i /tmp/age-key.txt "$f")
+            echo "::add-mask::$value"
+            {
+              echo "${name}<<AGEDELIM"
+              echo "$value"
+              echo "AGEDELIM"
+            } >> "$GITHUB_OUTPUT"
+          done
+          rm -f /tmp/age-key.txt
+        env:
+          AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+
+      - name: Resolve Release Version
+        id: resolve-version
+        if: github.ref == 'refs/heads/release' || (github.event_name == 'pull_request' && github.base_ref == 'release')
+        run: |
+          VERSION=$(grep 'MARKETING_VERSION' Project.swift | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Base version from Project.swift: $VERSION"
+          while gh release view "v$VERSION" &>/dev/null; do
+            IFS='.' read -r major minor patch <<< "$VERSION"
+            patch=$((patch + 1))
+            VERSION="$major.$minor.$patch"
+            echo "Version exists, bumped to: $VERSION"
+          done
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Final release version: $VERSION"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
+      - name: Install Apple Certificate
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ steps.secrets.outputs.MACOS_P12_BASE64 }}
+          p12-password: ${{ steps.secrets.outputs.MACOS_P12_PASSWORD }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Install Distribution Dependencies
+        run: ./distribution/install-deps.sh
+
+      - name: Install Tuist
+        run: |
+          brew tap tuist/tuist
+          brew install --formula tuist
+          tuist version
+
+      - name: Build Rust Core
+        run: make rust
+
+      - name: Generate Xcode Project
+        run: make generate
+
+      - name: Build App
+        run: make build CONFIGURATION=Release
+
+      - name: Build and Sign DMG
+        run: |
+          chmod +x distribution/build-dmg.sh
+
+          make build CONFIGURATION=Release
+
+          # Sign nested frameworks/bundles first (inside-out for Sparkle, XPC services, etc.)
+          APP="DerivedData/Build/Products/Release/ClipKittyTest.app"
+          if [ -d "$APP/Contents/Frameworks" ]; then
+            find "$APP/Contents/Frameworks" \( -type f -perm +111 -o -name "*.dylib" \) | while read -r binary; do
+              codesign --force --options runtime --sign "Developer ID Application" "$binary"
+            done
+          fi
+
+          # Sign the outer app (must come last)
+          codesign --force --options runtime --sign "Developer ID Application" \
+            --entitlements Sources/App/ClipKitty.oss.entitlements \
+            "$APP"
+          codesign --verify --deep --strict "$APP"
+
+          ./distribution/build-dmg.sh "$APP" ClipKittyTest.dmg
+          codesign --force --sign "Developer ID Application" ClipKittyTest.dmg
+
+      - name: Notarize DMG
+        run: |
+          echo "$NOTARY_KEY_BASE64" | base64 --decode > auth_key.p8
+          xcrun notarytool submit ClipKittyTest.dmg \
+            --key auth_key.p8 \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --wait --output-format json | tee notarization_result.json
+
+          STATUS=$(python3 -c "import json,sys; print(json.load(sys.stdin)['status'])" < notarization_result.json)
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::Notarization failed with status: $STATUS"
+            SUBMISSION_ID=$(python3 -c "import json,sys; print(json.load(sys.stdin)['id'])" < notarization_result.json)
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --key auth_key.p8 \
+              --key-id "$NOTARY_KEY_ID" \
+              --issuer "$NOTARY_ISSUER_ID" || true
+            exit 1
+          fi
+        env:
+          NOTARY_KEY_BASE64: ${{ steps.secrets.outputs.NOTARY_KEY_BASE64 }}
+          NOTARY_KEY_ID: ${{ steps.secrets.outputs.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ steps.secrets.outputs.NOTARY_ISSUER_ID }}
+
+      - name: Clean up Notary Key
+        if: always()
+        run: rm -f auth_key.p8
+
+      - name: Staple Notarization
+        run: |
+          for i in $(seq 1 10); do
+            if xcrun stapler staple ClipKittyTest.dmg; then
+              echo "Stapling succeeded on attempt $i"
+              exit 0
+            fi
+            echo "Staple attempt $i failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "Stapling failed after 10 attempts"
+          exit 1
+
+      - name: Install Sparkle CLI Tools
+        if: github.ref == 'refs/heads/release'
+        run: |
+          SPARKLE_VERSION="2.9.0"
+          curl -sL "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz" -o /tmp/sparkle.tar.xz
+          mkdir -p /tmp/sparkle
+          tar -xf /tmp/sparkle.tar.xz -C /tmp/sparkle
+          echo "/tmp/sparkle/bin" >> "$GITHUB_PATH"
+
+      - name: Sign DMG with EdDSA
+        if: github.ref == 'refs/heads/release'
+        id: eddsa-sign
+        run: |
+          SIGNATURE=$(echo "$SPARKLE_EDDSA_KEY" | sign_update ClipKittyTest.dmg --ed-key-file -)
+          # sign_update outputs: sparkle:edSignature="..." length="..."
+          ED_SIGNATURE=$(echo "$SIGNATURE" | sed 's/.*sparkle:edSignature="\([^"]*\)".*/\1/')
+          FILE_LENGTH=$(echo "$SIGNATURE" | sed 's/.*length="\([^"]*\)".*/\1/')
+          echo "ed_signature=$ED_SIGNATURE" >> "$GITHUB_OUTPUT"
+          echo "file_length=$FILE_LENGTH" >> "$GITHUB_OUTPUT"
+        env:
+          SPARKLE_EDDSA_KEY: ${{ steps.secrets.outputs.SPARKLE_EDDSA_KEY }}
+
+      - name: Generate Appcast
+        if: github.ref == 'refs/heads/release'
+        run: |
+          chmod +x distribution/generate-appcast.sh
+          ./distribution/generate-appcast.sh \
+            "$VERSION" \
+            "${{ steps.eddsa-sign.outputs.ed_signature }}" \
+            "${{ steps.eddsa-sign.outputs.file_length }}" \
+            > appcast.xml
+          echo "--- Generated appcast.xml ---"
+          cat appcast.xml
+          # Validate XML
+          xmllint --noout appcast.xml
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClipKittyTest-Builds
+          path: ClipKittyTest.dmg
+
+      - name: Deploy to gh-pages
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release')
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin gh-pages || true
+          rm -rf /tmp/gh-pages
+          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+            git worktree add /tmp/gh-pages gh-pages
+            cd /tmp/gh-pages
+            git pull origin gh-pages || true
+          else
+            git worktree add --detach /tmp/gh-pages
+            cd /tmp/gh-pages
+            git checkout --orphan gh-pages
+            git reset --hard
+          fi
+
+          [ -f "$GITHUB_WORKSPACE/appcast.xml" ] && cp "$GITHUB_WORKSPACE/appcast.xml" .
+
+          # Create minimal index.html
+          echo "<html><body><h1>ClipKittyTest Sparkle Updates</h1><p><a href='appcast.xml'>appcast.xml</a></p></body></html>" > index.html
+
+          git add index.html
+          git add appcast.xml 2>/dev/null || true
+          git commit -m "Update appcast [skip ci]" || echo "No changes to commit"
+          git push origin gh-pages
+
+          cd -
+          git worktree remove /tmp/gh-pages --force
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/release'
+        run: |
+          gh release delete "v$VERSION" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "v$VERSION" \
+            --title "ClipKittyTest v$VERSION" \
+            --generate-notes \
+            ClipKittyTest.dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Create Development Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          gh release create "commit-${GITHUB_SHA}" \
+            --title "ClipKittyTest ${GITHUB_SHA}" \
+            --prerelease \
+            ClipKittyTest.dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Sync Version to Main
+        if: github.ref == 'refs/heads/release'
+        run: |
+          CURRENT=$(grep 'MARKETING_VERSION' Project.swift | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$CURRENT" != "$VERSION" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git config --unset-all http.https://github.com/.extraheader || true
+            git remote set-url origin "https://x-access-token:${ADMIN_TOKEN}@github.com/${{ github.repository }}.git"
+            git fetch origin main
+            git checkout -f main
+            sed -i '' "s/\"MARKETING_VERSION\": \"$CURRENT\"/\"MARKETING_VERSION\": \"$VERSION\"/" Project.swift
+            git add Project.swift
+            if ! git diff --cached --quiet; then
+              git commit -m "bump version to $VERSION"
+              git push origin main
+            fi
+          fi
+        env:
+          ADMIN_TOKEN: ${{ steps.secrets.outputs.ADMIN_TOKEN }}

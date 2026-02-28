@@ -1,0 +1,86 @@
+[package]
+name = "purr"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+# SYNC: Library name must match Project.swift linkedLibrary("purr")
+# Output: libpurr.a (static), libpurr.dylib (dynamic)
+name = "purr"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[[bin]]
+name = "generate-bindings"
+path = "src/bin/generate_bindings.rs"
+
+[dependencies]
+rusqlite = { version = "*", features = ["bundled", "modern_sqlite"] }
+r2d2 = "*"
+r2d2_sqlite = "*"
+once_cell = "*"
+thiserror = "*"
+chrono = { version = "*", features = ["serde"] }
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+base64 = "*"
+parking_lot = "*"
+url = "*"
+csscolorparser = "*"
+uniffi = { version = "*", features = ["cli"] }
+validator = { version = "0.16", features = ["derive", "unic"] }
+tantivy = "*"
+image = { version = "*", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+tokio = { version = "*", features = ["full"] }
+tokio-util = { version = "*", features = ["rt"] }
+async-trait = "*"
+rayon = "*"
+thread-priority = "*"
+rand = "*"
+anyhow = "*"
+clap = { version = "*", features = ["derive"] }
+futures = "*"
+
+[features]
+default = ["serde"]
+serde = ["chrono/serde"]
+perf-log = []
+
+
+
+[build-dependencies]
+uniffi = { version = "*", features = ["build"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+debug = false
+
+# Optimize all dependencies in release mode too
+[profile.release.package."*"]
+opt-level = 3
+codegen-units = 1
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+debug = false
+
+[profile.dev]
+opt-level = 1
+
+[[bench]]
+name = "search_benchmark"
+harness = false
+
+[dev-dependencies]
+tempfile = "*"
+criterion = { version = "*", features = ["html_reports"] }
+rusqlite = { version = "*", features = ["bundled"] }
+
