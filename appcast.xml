@@ -5,14 +5,14 @@
     <link>https://jul-sh.github.io/clipkitty-sparkle-test/appcast.xml</link>
     <language>en</language>
     <item>
-      <title>ClipKittyTest 1.0.0</title>
-      <sparkle:version>1.0.0</sparkle:version>
-      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+      <title>ClipKittyTest 1.0.1</title>
+      <sparkle:version>1.0.1</sparkle:version>
+      <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/jul-sh/clipkitty-sparkle-test/releases/download/v1.0.0/ClipKittyTest.dmg"
+      <enclosure url="https://github.com/jul-sh/clipkitty-sparkle-test/releases/download/v1.0.1/ClipKittyTest.dmg"
                  type="application/octet-stream"
-                 sparkle:edSignature="TlPSyLpjhChte2o2HXalWXsIZMSFjY6ZbCPv4jxsiiVWTaL1Umc172Tx12pTeLeENLS7C1P9ndUbUOgXF8BzCw=="
-                 length="11044649" />
+                 sparkle:edSignature="Lyl89QC152fURWDHPi5PCq2bgdNBWwt2D2CE+79S9HcqCG965zqM2265A8/eIZEWT8r4E8MKktZY48Ye5mqZCg=="
+                 length="11044644" />
     </item>
   </channel>
 </rss>
