@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>ClipKittyTest Updates</title>
+    <link>https://jul-sh.github.io/clipkitty-sparkle-test/appcast.xml</link>
+    <language>en</language>
+    <item>
+      <title>ClipKittyTest 1.0.0</title>
+      <sparkle:version>1.0.0</sparkle:version>
+      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/jul-sh/clipkitty-sparkle-test/releases/download/v1.0.0/ClipKittyTest.dmg"
+                 type="application/octet-stream"
+                 sparkle:edSignature="TlPSyLpjhChte2o2HXalWXsIZMSFjY6ZbCPv4jxsiiVWTaL1Umc172Tx12pTeLeENLS7C1P9ndUbUOgXF8BzCw=="
+                 length="11044649" />
+    </item>
+  </channel>
+</rss>
