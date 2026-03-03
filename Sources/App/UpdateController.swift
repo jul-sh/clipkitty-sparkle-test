@@ -25,6 +25,7 @@ final class SilentUpdateDriver: NSObject, SPUUserDriver {
     func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) {}
 
     func showUpdateFound(with appcastItem: SUAppcastItem, state: SPUUserUpdateState, reply: @escaping (SPUUserUpdateChoice) -> Void) {
+        log.info("Update found: \(appcastItem.displayVersionString) (build \(appcastItem.versionString))")
         let settings = AppSettings.shared
         settings.updateCheckState = .idle
         settings.updateCheckFailingSince = nil
@@ -33,11 +34,11 @@ final class SilentUpdateDriver: NSObject, SPUUserDriver {
             log.info("Information-only update found — dismissing")
             reply(.dismiss)
         } else if forceInstall || settings.autoInstallUpdates {
-            log.info("Update found: \(appcastItem.displayVersionString) — installing")
+            log.info("Auto-installing update: \(appcastItem.displayVersionString)")
             forceInstall = false
             reply(.install)
         } else {
-            log.info("Update found: \(appcastItem.displayVersionString) — awaiting user action")
+            log.info("Update available but not auto-installing: \(appcastItem.displayVersionString)")
             settings.updateCheckState = .available
             reply(.dismiss)
         }
@@ -127,10 +128,18 @@ final class UpdateController {
         log.info("Feed URL: \(bundle.object(forInfoDictionaryKey: "SUFeedURL") as? String ?? "not set")")
         log.info("Public key: \(bundle.object(forInfoDictionaryKey: "SUPublicEDKey") as? String ?? "not set")")
         log.info("Version: \(bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown")")
+        log.info("Build: \(bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown")")
 
         do {
             try updater.start()
             log.info("Sparkle updater started successfully")
+            // Trigger a check shortly after launch to ensure updates are found promptly,
+            // rather than waiting for the full scheduled interval on first launch.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                guard let self, self.updater.canCheckForUpdates else { return }
+                log.info("Running startup update check")
+                self.updater.checkForUpdates()
+            }
         } catch {
             log.error("Failed to start updater: \(error.localizedDescription)")
         }

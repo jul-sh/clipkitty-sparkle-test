@@ -86,7 +86,7 @@ let project = Project(
                 "SUPublicEDKey": "F+ONBiHseLAYBhquVrHVWseN/zFc9AKy/rcHMyyXlew=",
                 "SUEnableAutomaticChecks": true,
                 "SUAutomaticallyUpdate": true,
-                "SUEnableInstallerLauncherService": true,
+                "SUEnableInstallerLauncherService": false,
             ]),
             sources: ["Sources/App/**"],
             resources: [
@@ -115,7 +115,6 @@ let project = Project(
                     ]),
                     .release(name: "Release", settings: [
                         "CODE_SIGN_ENTITLEMENTS": "Sources/App/ClipKitty.oss.entitlements",
-                        "CURRENT_PROJECT_VERSION": "$(MARKETING_VERSION)",
                     ]),
                 ]
             )
